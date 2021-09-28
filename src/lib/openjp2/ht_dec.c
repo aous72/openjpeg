@@ -56,10 +56,16 @@
 #endif
 
 //************************************************************************/
-/** @brief Displays the error message for disabling the decoding of SPP and
-  * MRP passes
+/** @brief Displays the warning message for disabling the decoding of SPP
+  * and MRP passes
   */
 static OPJ_BOOL only_cleanup_pass_is_decoded = OPJ_FALSE;
+
+//************************************************************************/
+/** @brief Displays the warning message when the length for SPP and MRP
+  * is zero
+  */
+static OPJ_BOOL spp_mrp_with_zero_length = OPJ_FALSE;
 
 //************************************************************************/
 /** @brief Generates population count (i.e., the number of set bits)
@@ -1131,22 +1137,10 @@ OPJ_BOOL opj_t1_ht_decode_cblk(opj_t1_t *t1,
     OPJ_BOOL stripe_causal = (cblksty & J2K_CCP_CBLKSTY_VSC) != 0;
     OPJ_UINT32 cblk_len = 0;
 
-    (void)(orient);      // stops unused parameter message
-    (void)(check_pterm); // stops unused parameter message
-
     // We ignor orient, because the same decoder is used for all subbands
     // We also ignore check_pterm, because I am not sure how it applies
-    if (roishift != 0) {
-        if (p_manager_mutex) {
-            opj_mutex_lock(p_manager_mutex);
-        }
-        opj_event_msg(p_manager, EVT_ERROR, "We do not support ROI in decoding "
-                      "HT codeblocks\n");
-        if (p_manager_mutex) {
-            opj_mutex_unlock(p_manager_mutex);
-        }
-        return OPJ_FALSE;
-    }
+    (void)(orient);      // stops unused parameter message
+    (void)(check_pterm); // stops unused parameter message
 
     if (!opj_t1_allocate_buffers(
                 t1,
@@ -1159,8 +1153,11 @@ OPJ_BOOL opj_t1_ht_decode_cblk(opj_t1_t *t1,
         return OPJ_TRUE;
     }
 
-    /* numbps = Mb + 1 - zero_bplanes, Mb = Kmax, zero_bplanes = missing_msbs */
-    zero_bplanes = (cblk->Mb + 1) - cblk->numbps;
+    /* In the line: "l_cblk->numbps = (OPJ_UINT32)l_band->numbps + 1 - i;"
+       i is equal (missing_msbs + 1), and Mb = Kmax = l_band->numbps;
+       therefore, zero_bplanes = missing_msbs = Mb - numbps;
+       */
+    zero_bplanes = cblk->Mb - cblk->numbps;
 
     /* Compute whole codeblock length from chunk lengths */
     cblk_len = 0;
@@ -1245,14 +1242,24 @@ OPJ_BOOL opj_t1_ht_decode_cblk(opj_t1_t *t1,
     sip_shift = 0; //the amount of shift needed for sigma
 
     if (num_passes > 1 && lengths2 == 0) {
-        if (p_manager_mutex) {
-            opj_mutex_lock(p_manager_mutex);
-        }
-        opj_event_msg(p_manager, EVT_WARNING, "A malformed codeblock that has "
-                      "more than one coding pass, but zero length for "
-                      "2nd and potentially the 3rd pass in an HT codeblock.\n");
-        if (p_manager_mutex) {
-            opj_mutex_unlock(p_manager_mutex);
+        if (spp_mrp_with_zero_length == OPJ_FALSE) {
+            if (p_manager_mutex) {
+                opj_mutex_lock(p_manager_mutex);
+            }
+            if (spp_mrp_with_zero_length == OPJ_FALSE) {
+                /* We have a second check to prevent the possibility of an overrun condition,
+                   in the very unlikely event of a second thread discovering that
+                   only_cleanup_pass_is_decoded is false before the first thread changing
+                   the condition. */
+                spp_mrp_with_zero_length = OPJ_TRUE;
+                opj_event_msg(p_manager, EVT_WARNING, "A codeblock that has "
+                              "more than one coding pass, but zero length for "
+                              "2nd and potentially the 3rd pass in an HT codeblock. "
+                              "This message will not be displayed again.\n");
+            }
+            if (p_manager_mutex) {
+                opj_mutex_unlock(p_manager_mutex);
+            }
         }
         num_passes = 1;
     }
@@ -1269,74 +1276,66 @@ OPJ_BOOL opj_t1_ht_decode_cblk(opj_t1_t *t1,
         return OPJ_FALSE;
     }
 
-    if (cblk->Mb > 30) {
-        /* This check is better moved to opj_t2_read_packet_header() in t2.c
-           We do not have enough precision to decode any passes
-           The design of openjpeg assumes that the bits of a 32-bit integer are
-           assigned as follows:
-           bit 31 is for sign
-           bits 30-1 are for magnitude
-           bit 0 is for the center of the quantization bin
-           Therefore we can only do values of cblk->Mb <= 30
-         */
+    if (zero_bplanes > 30) {
+        /* We do not have enough precision to decode this codeblock.
+           zero_bplanes can generate up to zero_bplanes + 1 bits exclusing the
+           sign bit. */
         if (p_manager_mutex) {
             opj_mutex_lock(p_manager_mutex);
         }
         opj_event_msg(p_manager, EVT_ERROR, "32 bits are not enough to "
-                      "decode this codeblock, since the number of "
-                      "bitplane, %d, is larger than 30.\n", cblk->Mb);
+                      "decode this codeblock, since we need %d bits + 1 sign "
+                      "bit + the center of the bin bit.\n", zero_bplanes + 1);
         if (p_manager_mutex) {
             opj_mutex_unlock(p_manager_mutex);
         }
         return OPJ_FALSE;
-    }
-    if (zero_bplanes > cblk->Mb) {
-        /* This check is better moved to opj_t2_read_packet_header() in t2.c,
-           in the line "l_cblk->numbps = (OPJ_UINT32)l_band->numbps + 1 - i;"
-           where i is the zero bitplanes, and should be no larger than cblk->Mb
-           We cannot have more zero bitplanes than there are planes. */
+    } else if (zero_bplanes == 30) { // p == 0
+        /* The design of openjpeg assumes that the bits of a 32-bit integer are
+           assigned as follows:
+           bit 31 is for sign
+           bits 30-1 are for magnitude
+           bit 0 is for the center of the quantization bin
+           */
         if (p_manager_mutex) {
             opj_mutex_lock(p_manager_mutex);
         }
-        opj_event_msg(p_manager, EVT_ERROR, "Malformed HT codeblock. "
-                      "Decoding this codeblock is stopped. There are "
-                      "%d zero bitplanes in %d bitplanes.\n",
-                      zero_bplanes, cblk->Mb);
-
+        opj_event_msg(p_manager, EVT_ERROR, "32 bits are not enough to "
+                      "decode this codeblock, since we need %d bits + 1 sign "
+                      "bit + the center of the bin bit, but the design can be "
+                      "modified to include this case, by removing the center of "
+                      "bin.\n", zero_bplanes + 1);
         if (p_manager_mutex) {
             opj_mutex_unlock(p_manager_mutex);
         }
         return OPJ_FALSE;
-    } else if (zero_bplanes == cblk->Mb && num_passes > 1) {
-        /* When the number of zero bitplanes is equal to the number of bitplanes,
-           only the cleanup pass makes sense*/
-        if (only_cleanup_pass_is_decoded == OPJ_FALSE) {
-            if (p_manager_mutex) {
-                opj_mutex_lock(p_manager_mutex);
-            }
-            /* We have a second check to prevent the possibility of an overrun condition,
-               in the very unlikely event of a second thread discovering that
-               only_cleanup_pass_is_decoded is false before the first thread changing
-               the condition. */
+    } else if (zero_bplanes == 29) {
+        if (num_passes > 1) {
             if (only_cleanup_pass_is_decoded == OPJ_FALSE) {
-                only_cleanup_pass_is_decoded = OPJ_TRUE;
-                opj_event_msg(p_manager, EVT_WARNING, "Malformed HT codeblock. "
-                              "When the number of zero planes bitplanes is "
-                              "equal to the number of bitplanes, only the cleanup "
-                              "pass makes sense, but we have %d passes in this "
-                              "codeblock. Therefore, only the cleanup pass will be "
-                              "decoded. This message will not be displayed again.\n",
-                              num_passes);
+                if (p_manager_mutex) {
+                    opj_mutex_lock(p_manager_mutex);
+                }
+                /* We have a second check to prevent the possibility of an overrun condition,
+                   in the very unlikely event of a second thread discovering that
+                   only_cleanup_pass_is_decoded is false before the first thread changing
+                   the condition. */
+                if (only_cleanup_pass_is_decoded == OPJ_FALSE) {
+                    only_cleanup_pass_is_decoded = OPJ_TRUE;
+                    opj_event_msg(p_manager, EVT_WARNING, "Not enough precision "
+                                  "to decode the SgnProp nor MagRef passes; both "
+                                  " will be skipped. This message will not be "
+                                  "displayed again.\n");
+                }
+                if (p_manager_mutex) {
+                    opj_mutex_unlock(p_manager_mutex);
+                }
             }
-            if (p_manager_mutex) {
-                opj_mutex_unlock(p_manager_mutex);
-            }
+            num_passes = 1;
         }
-        num_passes = 1;
     }
 
     /* OPJ_UINT32 */
-    p = cblk->numbps;
+    p = 30 - zero_bplanes;
 
     // OPJ_UINT32 zero planes plus 1
     zero_bplanes_p1 = zero_bplanes + 1;
@@ -2625,12 +2624,25 @@ OPJ_BOOL opj_t1_ht_decode_cblk(opj_t1_t *t1,
         }
     }
 
+    if (cblk->Mb + roishift > 30) {
+        if (p_manager_mutex) {
+            opj_mutex_lock(p_manager_mutex);
+        }
+        opj_event_msg(p_manager, EVT_ERROR, "32 bits are not enough to "
+                      "decode this codeblock\n");
+        if (p_manager_mutex) {
+            opj_mutex_unlock(p_manager_mutex);
+        }
+        return OPJ_FALSE;
+    }
+
     {
         OPJ_INT32 x, y;
+        int shift = 30 - (OPJ_INT32)(cblk->Mb + roishift);
         for (y = 0; y < height; ++y) {
             OPJ_INT32* sp = (OPJ_INT32*)decoded_data + y * stride;
             for (x = 0; x < width; ++x, ++sp) {
-                OPJ_INT32 val = (*sp & 0x7FFFFFFF);
+                OPJ_INT32 val = (*sp & 0x7FFFFFFF) >> shift;
                 *sp = ((OPJ_UINT32) * sp & 0x80000000) ? -val : val;
             }
         }
