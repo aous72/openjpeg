@@ -1247,7 +1247,8 @@ static void tif_16uto32s(const OPJ_UINT16* pSrc, OPJ_INT32* pDst,
  * libtiff/tif_getimage.c : 1,2,4,8,16 bitspersample accepted
  * CINEMA                 : 12 bit precision
  */
-opj_image_t* tiftoimage(const char *filename, opj_cparameters_t *parameters)
+opj_image_t* tiftoimage(const char *filename, opj_cparameters_t *parameters,
+                        const unsigned int target_bitdepth)
 {
     int subsampling_dx = parameters->subsampling_dx;
     int subsampling_dy = parameters->subsampling_dy;
@@ -1283,8 +1284,6 @@ opj_image_t* tiftoimage(const char *filename, opj_cparameters_t *parameters)
     TIFFGetField(tif, TIFFTAG_SAMPLESPERPIXEL, &tiSpp);
     TIFFGetField(tif, TIFFTAG_PHOTOMETRIC, &tiPhoto);
     TIFFGetField(tif, TIFFTAG_PLANARCONFIG, &tiPC);
-    w = (int)tiWidth;
-    h = (int)tiHeight;
 
     if (tiSpp == 0 || tiSpp > 4) { /* should be 1 ... 4 */
         fprintf(stderr, "tiftoimage: Bad value for samples per pixel == %d.\n"
@@ -1389,7 +1388,6 @@ opj_image_t* tiftoimage(const char *filename, opj_cparameters_t *parameters)
 
     for (j = 0; j < numcomps; j++) {
         cmptparm[j].prec = tiBps;
-        cmptparm[j].bpp = tiBps;
         cmptparm[j].dx = (OPJ_UINT32)subsampling_dx;
         cmptparm[j].dy = (OPJ_UINT32)subsampling_dy;
         cmptparm[j].w = (OPJ_UINT32)w;
@@ -1507,6 +1505,10 @@ opj_image_t* tiftoimage(const char *filename, opj_cparameters_t *parameters)
             scale_component(&(image->comps[j]), 12);
         }
 
+    } else if ((target_bitdepth > 0) && (target_bitdepth != tiBps)) {
+        for (j = 0; j < numcomps; ++j) {
+            scale_component(&(image->comps[j]), target_bitdepth);
+        }
     }
     return image;
 

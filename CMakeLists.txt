@@ -58,6 +58,7 @@ set(PACKAGE_VERSION
 #   2.3.0 |  7
 #   2.3.1 |  7
 #   2.4.0 |  7
+#   2.5.0 |  7
 # above is the recommendation by the OPJ team. If you really need to override this default,
 # you can specify your own OPENJPEG_SOVERSION at cmake configuration time:
 # cmake -DOPENJPEG_SOVERSION:STRING=42 /path/to/openjpeg
@@ -156,7 +157,12 @@ if(NOT OPENJPEG_INSTALL_PACKAGE_DIR)
 endif()
 
 if (APPLE)
-	list(APPEND OPENJPEG_LIBRARY_PROPERTIES INSTALL_NAME_DIR "${CMAKE_INSTALL_PREFIX}/${OPENJPEG_INSTALL_LIB_DIR}")
+    if (${CMAKE_VERSION} VERSION_LESS 3.0)
+        # For cmake >= 3.0, we turn on CMP0042 and
+        # https://cmake.org/cmake/help/v3.0/policy/CMP0042.html mentions
+        # "Projects wanting @rpath in a target’s install name may remove any setting of the INSTALL_NAME_DIR and CMAKE_INSTALL_NAME_DIR variables"
+        list(APPEND OPENJPEG_LIBRARY_PROPERTIES INSTALL_NAME_DIR "${CMAKE_INSTALL_PREFIX}/${OPENJPEG_INSTALL_LIB_DIR}")
+    endif()
 	option(OPJ_USE_DSYMUTIL "Call dsymutil on binaries after build." OFF)
 endif()
 
@@ -305,7 +311,7 @@ if(BUILD_DOC)
 endif()
 
 #-----------------------------------------------------------------------------
-# Buld Testing
+# Build Testing
 option(BUILD_TESTING "Build the tests." OFF)
 if(BUILD_TESTING)
   if(BUILD_CODEC)

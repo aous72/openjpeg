@@ -44,6 +44,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
+#include <limits.h>
 
 #ifdef _WIN32
 #include "windirent.h"
@@ -152,6 +153,8 @@ typedef struct opj_decompress_params {
     int num_threads;
     /* Quiet */
     int quiet;
+    /* Allow partial decode */
+    int allow_partial;
     /** number of components to decode */
     OPJ_UINT32 numcomps;
     /** indices of components to decode */
@@ -160,10 +163,10 @@ typedef struct opj_decompress_params {
 
 /* -------------------------------------------------------------------------- */
 /* Declarations                                                               */
-int get_num_images(char *imgdirpath);
+unsigned int get_num_images(char *imgdirpath);
 int load_images(dircnt_t *dirptr, char *imgdirpath);
 int get_file_format(const char *filename);
-char get_next_file(int imageno, dircnt_t *dirptr, img_fol_t *img_fol,
+char get_next_file(unsigned int imageno, dircnt_t *dirptr, img_fol_t *img_fol,
                    opj_decompress_parameters *parameters);
 static int infile_format(const char *fname);
 
@@ -226,7 +229,7 @@ static void decode_help_display(void)
             "    OPTIONAL\n"
             "    Force the precision (bit depth) of components.\n");
     fprintf(stdout,
-            "    There shall be at least 1 value. Theres no limit on the number of values (comma separated, last values ignored if too much values).\n"
+            "    There shall be at least 1 value. There is no limit on the number of values (comma separated, last values ignored if too much values).\n"
             "    If there are less values than components, the last value is used for remaining components.\n"
             "    If 'C' is specified (default), values are clipped.\n"
             "    If 'S' is specified, values are scaled.\n"
@@ -245,6 +248,8 @@ static void decode_help_display(void)
         fprintf(stdout, "  -threads <num_threads|ALL_CPUS>\n"
                 "    Number of threads to use for decoding or ALL_CPUS for all available cores.\n");
     }
+    fprintf(stdout, "  -allow-partial\n"
+            "    Disable strict mode to allow decoding partial codestreams.\n");
     fprintf(stdout, "  -quiet\n"
             "    Disable output from the library and other output.\n");
     /* UniPG>> */
@@ -370,11 +375,11 @@ static OPJ_BOOL parse_precision(const char* option,
 
 /* -------------------------------------------------------------------------- */
 
-int get_num_images(char *imgdirpath)
+unsigned int get_num_images(char *imgdirpath)
 {
     DIR *dir;
     struct dirent* content;
-    int num_images = 0;
+    unsigned int num_images = 0;
 
     /*Reading the input images from given input directory*/
 
@@ -388,7 +393,13 @@ int get_num_images(char *imgdirpath)
         if (strcmp(".", content->d_name) == 0 || strcmp("..", content->d_name) == 0) {
             continue;
         }
+        if (num_images == UINT_MAX) {
+            fprintf(stderr, "Too many files in folder %s\n", imgdirpath);
+            num_images = 0;
+            break;
+        }
         num_images++;
+
     }
     closedir(dir);
     return num_images;
@@ -468,7 +479,7 @@ const char* path_separator = "/";
 #endif
 
 /* -------------------------------------------------------------------------- */
-char get_next_file(int imageno, dircnt_t *dirptr, img_fol_t *img_fol,
+char get_next_file(unsigned int imageno, dircnt_t *dirptr, img_fol_t *img_fol,
                    opj_decompress_parameters *parameters)
 {
     char image_filename[OPJ_PATH_LEN], infilename[OPJ_PATH_LEN],
@@ -476,7 +487,7 @@ char get_next_file(int imageno, dircnt_t *dirptr, img_fol_t *img_fol,
     char *temp_p, temp1[OPJ_PATH_LEN] = "";
 
     strcpy(image_filename, dirptr->filename[imageno]);
-    fprintf(stderr, "File Number %d \"%s\"\n", imageno, image_filename);
+    fprintf(stderr, "File Number %u \"%s\"\n", imageno, image_filename);
     if (strlen(img_fol->imgdirpath) + strlen(path_separator) + strlen(
                 image_filename) + 1 > sizeof(infilename)) {
         return 1;
@@ -594,6 +605,7 @@ int parse_cmdline_decoder(int argc, char **argv,
         {"split-pnm", NO_ARG,  NULL, 1},
         {"threads",   REQ_ARG, NULL, 'T'},
         {"quiet", NO_ARG,  NULL, 1},
+        {"allow-partial", NO_ARG,  NULL, 1},
     };
 
     const char optlist[] = "i:o:r:l:x:d:t:p:c:"
@@ -609,6 +621,7 @@ int parse_cmdline_decoder(int argc, char **argv,
     long_option[3].flag = &(parameters->upsample);
     long_option[4].flag = &(parameters->split_pnm);
     long_option[6].flag = &(parameters->quiet);
+    long_option[7].flag = &(parameters->allow_partial);
     totlen = sizeof(long_option);
     opj_reset_options_reading();
     img_fol->set_out_format = 0;
@@ -802,7 +815,7 @@ int parse_cmdline_decoder(int argc, char **argv,
         break;
 
         /* ----------------------------------------------------- */
-        case 'c': { /* Componenets */
+        case 'c': { /* Components */
             const char* iter = opj_optarg;
             while (1) {
                 parameters->numcomps ++;
@@ -1086,8 +1099,6 @@ static opj_image_t* convert_gray_to_rgb(opj_image_t* original)
         return NULL;
     }
 
-    l_new_components[0].bpp  = l_new_components[1].bpp  = l_new_components[2].bpp  =
-                                   original->comps[0].bpp;
     l_new_components[0].dx   = l_new_components[1].dx   = l_new_components[2].dx   =
                                    original->comps[0].dx;
     l_new_components[0].dy   = l_new_components[1].dy   = l_new_components[2].dy   =
@@ -1106,7 +1117,6 @@ static opj_image_t* convert_gray_to_rgb(opj_image_t* original)
                                    original->comps[0].y0;
 
     for (compno = 1U; compno < original->numcomps; ++compno) {
-        l_new_components[compno + 2U].bpp  = original->comps[compno].bpp;
         l_new_components[compno + 2U].dx   = original->comps[compno].dx;
         l_new_components[compno + 2U].dy   = original->comps[compno].dy;
         l_new_components[compno + 2U].h    = original->comps[compno].h;
@@ -1196,7 +1206,6 @@ static opj_image_t* upsample_image_components(opj_image_t* original)
         opj_image_cmptparm_t* l_new_cmp = &(l_new_components[compno]);
         opj_image_comp_t*     l_org_cmp = &(original->comps[compno]);
 
-        l_new_cmp->bpp  = l_org_cmp->bpp;
         l_new_cmp->prec = l_org_cmp->prec;
         l_new_cmp->sgnd = l_org_cmp->sgnd;
         l_new_cmp->x0   = original->x0;
@@ -1338,7 +1347,7 @@ int main(int argc, char **argv)
 {
     opj_decompress_parameters parameters;           /* decompression parameters */
 
-    OPJ_INT32 num_images, imageno;
+    unsigned int num_images, imageno;
     img_fol_t img_fol;
     dircnt_t *dirptr = NULL;
     int failed = 0;
@@ -1369,41 +1378,41 @@ int main(int argc, char **argv)
 
     /* Initialize reading of directory */
     if (img_fol.set_imgdir == 1) {
-        int it_image;
+        unsigned int it_image;
         num_images = get_num_images(img_fol.imgdirpath);
-
+        if (num_images == 0) {
+            fprintf(stderr, "Folder is empty\n");
+            failed = 1;
+            goto fin;
+        }
         dirptr = (dircnt_t*)calloc(1, sizeof(dircnt_t));
         if (!dirptr) {
             destroy_parameters(&parameters);
             return EXIT_FAILURE;
         }
         /* Stores at max 10 image file names */
-        dirptr->filename_buf = (char*)malloc(sizeof(char) *
-                                             (size_t)num_images * OPJ_PATH_LEN);
+        dirptr->filename_buf = calloc((size_t) num_images, sizeof(char) * OPJ_PATH_LEN);
         if (!dirptr->filename_buf) {
             failed = 1;
             goto fin;
         }
 
-        dirptr->filename = (char**) malloc((size_t)num_images * sizeof(char*));
+        dirptr->filename = (char**) calloc((size_t) num_images, sizeof(char*));
 
         if (!dirptr->filename) {
             failed = 1;
             goto fin;
         }
         for (it_image = 0; it_image < num_images; it_image++) {
-            dirptr->filename[it_image] = dirptr->filename_buf + it_image * OPJ_PATH_LEN;
+            dirptr->filename[it_image] = dirptr->filename_buf + (size_t)it_image *
+                                         OPJ_PATH_LEN;
         }
 
         if (load_images(dirptr, img_fol.imgdirpath) == 1) {
             failed = 1;
             goto fin;
         }
-        if (num_images == 0) {
-            fprintf(stderr, "Folder is empty\n");
-            failed = 1;
-            goto fin;
-        }
+
     } else {
         num_images = 1;
     }
@@ -1482,6 +1491,16 @@ int main(int argc, char **argv)
         /* Setup the decoder decoding parameters using user parameters */
         if (!opj_setup_decoder(l_codec, &(parameters.core))) {
             fprintf(stderr, "ERROR -> opj_decompress: failed to setup the decoder\n");
+            opj_stream_destroy(l_stream);
+            opj_destroy_codec(l_codec);
+            failed = 1;
+            goto fin;
+        }
+
+        /* Disable strict mode if we want to decode partial codestreams. */
+        if (parameters.allow_partial &&
+                !opj_decoder_set_strict_mode(l_codec, OPJ_FALSE)) {
+            fprintf(stderr, "ERROR -> opj_decompress: failed to disable strict mode\n");
             opj_stream_destroy(l_stream);
             opj_destroy_codec(l_codec);
             failed = 1;
